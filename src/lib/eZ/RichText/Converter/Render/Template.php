@@ -14,7 +14,9 @@ use DOMNode;
 use DOMXPath;
 use EzSystems\EzPlatformRichText\eZ\RichText\Converter;
 use EzSystems\EzPlatformRichText\eZ\RichText\Converter\Render;
+use EzSystems\EzPlatformRichText\eZ\RichText\Template\Attribute\Transformer\TransformerInterface;
 use EzSystems\EzPlatformRichText\eZ\RichText\RendererInterface;
+use EzSystems\EzPlatformRichText\eZ\RichText\Template\TemplateRegistryInterface;
 use Psr\Log\LoggerInterface;
 use Psr\Log\NullLogger;
 
@@ -25,14 +27,16 @@ class Template extends Render implements Converter
 {
     const LITERAL_LAYOUT_LINE_BREAK = "\n";
 
-    /**
-     * @var \EzSystems\EzPlatformRichText\eZ\RichText\Converter
-     */
+    /** @var \EzSystems\EzPlatformRichText\eZ\RichText\Converter */
     private $richTextConverter;
 
-    /**
-     * @var \Psr\Log\LoggerInterface
-     */
+    /** @var \EzSystems\EzPlatformRichText\eZ\RichText\Template\TemplateRegistry */
+    private $templateRegistry;
+
+    /** @var \EzSystems\EzPlatformRichText\eZ\RichText\Template\Attribute\Transformer\TransformerInterface */
+    private $attributeTransformer;
+
+    /** @var \Psr\Log\LoggerInterface */
     private $logger;
 
     /**
@@ -40,14 +44,20 @@ class Template extends Render implements Converter
      *
      * @param \EzSystems\EzPlatformRichText\eZ\RichText\RendererInterface $renderer
      * @param \EzSystems\EzPlatformRichText\eZ\RichText\Converter $richTextConverter
+     * @param \EzSystems\EzPlatformRichText\eZ\RichText\Template\TemplateRegistryInterface $templateRegistry
+     * @param \EzSystems\EzPlatformRichText\eZ\RichText\Template\Attribute\Transformer\TransformerInterface  $attributeTransformer
      * @param \Psr\Log\LoggerInterface $logger
      */
     public function __construct(
         RendererInterface $renderer,
         Converter $richTextConverter,
+        TemplateRegistryInterface $templateRegistry,
+        TransformerInterface $attributeTransformer,
         LoggerInterface $logger = null
     ) {
         $this->richTextConverter = $richTextConverter;
+        $this->templateRegistry = $templateRegistry;
+        $this->attributeTransformer = $attributeTransformer;
         $this->logger = $logger ?? new NullLogger();
 
         parent::__construct($renderer);
@@ -99,7 +109,7 @@ class Template extends Render implements Converter
         $templateType = $template->hasAttribute('type') ? $template->getAttribute('type') : 'tag';
         $parameters = [
             'name' => $templateName,
-            'params' => $this->extractConfiguration($template),
+            'params' => $this->processConfiguration($templateName, $this->extractConfiguration($template)),
         ];
 
         $contentNodes = $xpath->query('./docbook:ezcontent', $template);
@@ -234,5 +244,24 @@ class Template extends Render implements Converter
         );
 
         return $rootNode->appendChild($literalLayoutNode);
+    }
+
+    private function processConfiguration(string $templateName, array $params): array
+    {
+        if ($this->templateRegistry->has($templateName)) {
+            $template = $this->templateRegistry->get($templateName);
+
+            foreach ($params as $name => $value) {
+                if ($template->hasAttribute($name)) {
+                    $attribute = $template->getAttribute($name);
+
+                    if ($this->attributeTransformer->supports($template, $attribute)) {
+                        $params[$name] = $this->attributeTransformer->transform($template, $attribute, $value);
+                    }
+                }
+            }
+        }
+
+        return $params;
     }
 }
