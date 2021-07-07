@@ -8,19 +8,17 @@ declare(strict_types=1);
 
 namespace EzSystems\EzPlatformRichTextBundle\eZ\RichText;
 
+use eZ\Publish\API\Repository\Exceptions\NotFoundException;
 use eZ\Publish\API\Repository\Repository;
-use eZ\Publish\API\Repository\Values\Content\Content;
+use eZ\Publish\API\Repository\Values\Content\ContentInfo;
+use eZ\Publish\API\Repository\Values\Content\Location;
 use eZ\Publish\Core\MVC\ConfigResolverInterface;
 use EzSystems\EzPlatformRichText\eZ\RichText\RendererInterface;
-use Psr\Log\NullLogger;
-use Symfony\Component\Templating\EngineInterface;
-use Symfony\Component\Security\Core\Authorization\AuthorizationCheckerInterface;
-use eZ\Publish\Core\MVC\Symfony\Security\Authorization\Attribute as AuthorizationAttribute;
-use Symfony\Component\HttpKernel\Exception\NotFoundHttpException;
-use eZ\Publish\API\Repository\Exceptions\NotFoundException;
-use Symfony\Component\Security\Core\Exception\AccessDeniedException;
-use Exception;
 use Psr\Log\LoggerInterface;
+use Psr\Log\NullLogger;
+use Symfony\Component\Security\Core\Authorization\AuthorizationCheckerInterface;
+use Symfony\Component\Security\Core\Exception\AccessDeniedException;
+use Symfony\Component\Templating\EngineInterface;
 
 /**
  * Symfony implementation of RichText field type embed renderer.
@@ -36,6 +34,8 @@ class Renderer implements RendererInterface
     protected $repository;
 
     /**
+     * @deprecated since 2.1.2
+     *
      * @var \Symfony\Component\Security\Core\Authorization\AuthorizationCheckerInterface
      */
     private $authorizationChecker;
@@ -81,16 +81,9 @@ class Renderer implements RendererInterface
     private $customStylesConfiguration;
 
     /**
-     * @param \eZ\Publish\API\Repository\Repository $repository
-     * @param \Symfony\Component\Security\Core\Authorization\AuthorizationCheckerInterface $authorizationChecker
-     * @param \eZ\Publish\Core\MVC\ConfigResolverInterface $configResolver
-     * @param \Symfony\Component\Templating\EngineInterface $templateEngine
      * @param string $tagConfigurationNamespace
      * @param string $styleConfigurationNamespace
      * @param string $embedConfigurationNamespace
-     * @param \Psr\Log\LoggerInterface|null $logger
-     * @param array $customTagsConfiguration
-     * @param array $customStylesConfiguration
      */
     public function __construct(
         Repository $repository,
@@ -137,74 +130,20 @@ class Renderer implements RendererInterface
      */
     public function renderContentEmbed($contentId, $viewType, array $parameters, $isInline)
     {
-        $isDenied = false;
-
         try {
-            /** @var \eZ\Publish\API\Repository\Values\Content\Content $content */
-            $content = $this->repository->sudo(
+            /** @var \eZ\Publish\API\Repository\Values\Content\ContentInfo $contentInfo */
+            $contentInfo = $this->repository->sudo(
                 function (Repository $repository) use ($contentId) {
-                    return $repository->getContentService()->loadContent($contentId);
+                    return $repository->getContentService()->loadContentInfo($contentId);
                 }
             );
-
-            if (!$content->contentInfo->mainLocationId) {
-                $this->logger->error(
-                    "Could not render embedded resource: Content #{$contentId} is trashed."
-                );
-
-                return null;
-            }
-
-            if ($content->contentInfo->isHidden) {
-                $this->logger->error(
-                    "Could not render embedded resource: Content #{$contentId} is hidden."
-                );
-
-                return null;
-            }
-
-            $this->checkContentPermissions($content);
-        } catch (AccessDeniedException $e) {
-            $this->logger->error(
-                "Could not render embedded resource: access denied to embed Content #{$contentId}"
-            );
-
-            $isDenied = true;
-        } catch (Exception $e) {
-            if ($e instanceof NotFoundHttpException || $e instanceof NotFoundException) {
-                $this->logger->error(
-                    "Could not render embedded resource: Content #{$contentId} not found"
-                );
-
-                return null;
-            } else {
-                throw $e;
-            }
-        }
-
-        $templateName = $this->getEmbedTemplateName(
-            static::RESOURCE_TYPE_CONTENT,
-            $isInline,
-            $isDenied
-        );
-
-        if ($templateName === null) {
-            $this->logger->error(
-                'Could not render embedded resource: no template configured'
-            );
+        } catch (NotFoundException $e) {
+            $this->logger->error("Could not render embedded resource: Content #{$contentId} not found");
 
             return null;
         }
 
-        if (!$this->templateEngine->exists($templateName)) {
-            $this->logger->error(
-                "Could not render embedded resource: template '{$templateName}' does not exists"
-            );
-
-            return null;
-        }
-
-        return $this->render($templateName, $parameters);
+        return $this->renderEmbed($contentInfo, static::RESOURCE_TYPE_CONTENT, $isInline, $parameters);
     }
 
     /**
@@ -212,54 +151,69 @@ class Renderer implements RendererInterface
      */
     public function renderLocationEmbed($locationId, $viewType, array $parameters, $isInline)
     {
-        $isDenied = false;
-
         try {
-            $location = $this->checkLocation($locationId);
-
-            if ($location->invisible) {
-                $this->logger->error(
-                    "Could not render embedded resource: Location #{$locationId} is not visible"
-                );
-
-                return null;
-            }
-        } catch (AccessDeniedException $e) {
-            $this->logger->error(
-                "Could not render embedded resource: access denied to embed Location #{$locationId}"
+            /** @var \eZ\Publish\API\Repository\Values\Content\Location $location */
+            $location = $this->repository->sudo(
+                function (Repository $repository) use ($locationId) {
+                    return $repository->getLocationService()->loadLocation($locationId);
+                }
             );
+        } catch (NotFoundException $e) {
+            $this->logger->error("Could not render embedded resource: Location #{$locationId} not found");
 
-            $isDenied = true;
-        } catch (Exception $e) {
-            if ($e instanceof NotFoundHttpException || $e instanceof NotFoundException) {
-                $this->logger->error(
-                    "Could not render embedded resource: Location #{$locationId} not found"
-                );
-
-                return null;
-            } else {
-                throw $e;
-            }
+            return null;
         }
-
-        $templateName = $this->getEmbedTemplateName(
-            static::RESOURCE_TYPE_LOCATION,
-            $isInline,
-            $isDenied
-        );
-
-        if ($templateName === null) {
-            $this->logger->error(
-                'Could not render embedded resource: no template configured'
-            );
+        if ($location->invisible) {
+            $this->logger->error("Could not render embedded resource: Location #{$locationId} is not visible");
 
             return null;
         }
 
-        if (!$this->templateEngine->exists($templateName)) {
+        return $this->renderEmbed(
+            $location->getContentInfo(),
+            static::RESOURCE_TYPE_LOCATION,
+            $isInline,
+            $parameters,
+            $location
+        );
+    }
+
+    protected function renderEmbed(
+        ContentInfo $contentInfo,
+        int $resourceType,
+        bool $isInline,
+        array $parameters,
+        Location $location = null
+    ): ?string {
+        if (!$contentInfo->mainLocationId) {
+            $this->logger->error("Could not render embedded resource: Content #{$contentInfo->id} is trashed.");
+
+            return null;
+        }
+        if ($contentInfo->isHidden) {
+            $this->logger->error("Could not render embedded resource: Content #{$contentInfo->id} is hidden.");
+
+            return null;
+        }
+
+        $isDenied = false;
+        try {
+            $this->checkContentInfoPermissions($contentInfo, $location);
+        } catch (AccessDeniedException $e) {
             $this->logger->error(
-                "Could not render embedded resource: template '{$templateName}' does not exists"
+                "Could not render embedded resource: access denied to embed Content #{$contentInfo->id}"
             );
+            $isDenied = true;
+        }
+
+        $templateName = $this->getEmbedTemplateName($resourceType, $isInline, $isDenied);
+        if ($templateName === null) {
+            $this->logger->error('Could not render embedded resource: no template configured');
+
+            return null;
+        }
+        if (!$this->templateEngine->exists($templateName)) {
+            $this->logger->error("Could not render embedded resource: template '{$templateName}' does not exists");
 
             return null;
         }
@@ -272,7 +226,6 @@ class Renderer implements RendererInterface
      *
      * @param string $name
      * @param string $type
-     * @param array $parameters
      * @param bool $isInline
      *
      * @return string
@@ -311,7 +264,6 @@ class Renderer implements RendererInterface
      * Renders template $templateReference with given $parameters.
      *
      * @param string $templateReference
-     * @param array $parameters
      *
      * @return string
      */
@@ -483,37 +435,30 @@ class Renderer implements RendererInterface
             }
         );
 
-        $this->checkContentPermissions($content);
+        $this->checkContentInfoPermissions($content->contentInfo);
     }
 
     /**
-     * Check embed permissions for the given Content.
+     * Check embed permissions for the given Content Info.
      *
      * @throws \Symfony\Component\Security\Core\Exception\AccessDeniedException
-     *
-     * @param \eZ\Publish\API\Repository\Values\Content\Content $content
      */
-    protected function checkContentPermissions(Content $content)
+    protected function checkContentInfoPermissions(ContentInfo $contentInfo, Location $targetLocation = null): void
     {
+        $permissionResolver = $this->repository->getPermissionResolver();
+
+        $targets = $targetLocation ? [$targetLocation] : [];
+
         // Check both 'content/read' and 'content/view_embed'.
         if (
-            !$this->authorizationChecker->isGranted(
-                new AuthorizationAttribute('content', 'read', ['valueObject' => $content])
-            )
-            && !$this->authorizationChecker->isGranted(
-                new AuthorizationAttribute('content', 'view_embed', ['valueObject' => $content])
-            )
+            !$permissionResolver->canUser('content', 'read', $contentInfo, $targets)
+            && !$permissionResolver->canUser('content', 'view_embed', $contentInfo, $targets)
         ) {
             throw new AccessDeniedException();
         }
 
         // Check that Content is published, since sudo allows loading unpublished content.
-        if (
-            !$content->getVersionInfo()->isPublished()
-            && !$this->authorizationChecker->isGranted(
-                new AuthorizationAttribute('content', 'versionread', ['valueObject' => $content])
-            )
-        ) {
+        if (!$contentInfo->isPublished() && !$permissionResolver->canUser('content', 'versionread', $contentInfo)) {
             throw new AccessDeniedException();
         }
     }
@@ -522,6 +467,8 @@ class Renderer implements RendererInterface
      * Checks embed permissions for the given Location $id and returns the Location.
      *
      * @throws \Symfony\Component\Security\Core\Exception\AccessDeniedException
+     *
+     * @deprecated since 2.1.2
      *
      * @param int|string $id
      *
@@ -535,26 +482,7 @@ class Renderer implements RendererInterface
                 return $repository->getLocationService()->loadLocation($id);
             }
         );
-
-        // Check both 'content/read' and 'content/view_embed'.
-        if (
-            !$this->authorizationChecker->isGranted(
-                new AuthorizationAttribute(
-                    'content',
-                    'read',
-                    ['valueObject' => $location->contentInfo, 'targets' => [$location]]
-                )
-            )
-            && !$this->authorizationChecker->isGranted(
-                new AuthorizationAttribute(
-                    'content',
-                    'view_embed',
-                    ['valueObject' => $location->contentInfo, 'targets' => [$location]]
-                )
-            )
-        ) {
-            throw new AccessDeniedException();
-        }
+        $this->checkContentInfoPermissions($location->getContentInfo(), $location);
 
         return $location;
     }
