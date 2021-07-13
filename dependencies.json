@@ -1,0 +1,8 @@
+[
+    {
+        "requirement": "dev-IBX-264-add-missing-richtext-suite as 2.3.x-dev",
+        "repositoryUrl": "https://github.com/ezsystems/ezplatform-admin-ui",
+        "package": "ezsystems/ezplatform-admin-ui",
+        "privateRepository": false
+    }
+]
